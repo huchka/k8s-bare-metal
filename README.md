@@ -4,13 +4,24 @@ A Kubernetes cluster built from scratch on local VMs using kubeadm. The goal is 
 
 ## Cluster
 
-Three arm64 Ubuntu 22.04 VMs on [Multipass](https://multipass.run/) (Apple Silicon).
+Topology is defined in `cluster.yaml`:
 
-| Node | Role | IP |
-|------|------|----|
-| cp1 | control plane | 192.168.2.5 |
-| worker1 | worker | 192.168.2.6 |
-| worker2 | worker | 192.168.2.7 |
+```yaml
+cluster:
+  ubuntu_version: "22.04"
+  control_plane:
+    count: 1
+    cpus: 2
+    memory: 2G
+    disk: 20G
+  workers:
+    count: 2
+    cpus: 2
+    memory: 2G
+    disk: 20G
+```
+
+Change the counts to adjust topology. Node names are generated automatically (`cp1..cpN`, `worker1..workerM`).
 
 **Stack:** containerd, kubeadm v1.35, Calico CNI (Tigera operator)
 
@@ -25,7 +36,7 @@ Three arm64 Ubuntu 22.04 VMs on [Multipass](https://multipass.run/) (Apple Silic
   chmod 600 ~/.ssh/multipass_default
   ```
 
-## Quick Start
+## Build from Scratch
 
 ### 1. Launch VMs
 
@@ -33,7 +44,7 @@ Three arm64 Ubuntu 22.04 VMs on [Multipass](https://multipass.run/) (Apple Silic
 ./lab.sh up
 ```
 
-Creates three VMs with cloud-init (OS prep: kernel modules, sysctl, containerd, kubeadm). If VMs already exist but are stopped, starts them.
+Creates VMs based on `cluster.yaml` with cloud-init (kernel modules, sysctl, containerd, kubeadm). Auto-generates `ansible/inventory.ini` from Multipass IPs.
 
 ### 2. Bootstrap control plane
 
@@ -41,7 +52,7 @@ Creates three VMs with cloud-init (OS prep: kernel modules, sysctl, containerd, 
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
 ```
 
-Runs `kubeadm init` on cp1, sets up kubeconfig, and saves the join command.
+Runs `kubeadm init` on cp1 with Calico pod CIDR (`192.168.0.0/16`), sets up kubeconfig, and saves the join command.
 
 ### 3. Install Calico CNI
 
@@ -49,7 +60,7 @@ Runs `kubeadm init` on cp1, sets up kubeconfig, and saves the join command.
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
 ```
 
-Installs the Tigera operator and Calico with pod CIDR `192.168.0.0/16`. Waits for calico-node and CoreDNS to be ready.
+Installs the Tigera operator and Calico. Waits for calico-node and CoreDNS to be ready. Control plane node goes `Ready`.
 
 ### 4. Join workers
 
@@ -57,7 +68,7 @@ Installs the Tigera operator and Calico with pod CIDR `192.168.0.0/16`. Waits fo
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
 ```
 
-Joins worker1 and worker2 to the cluster and verifies all nodes are `Ready`.
+Joins all worker nodes to the cluster and verifies every node is `Ready`.
 
 ### 5. Verify
 
@@ -66,28 +77,61 @@ multipass exec cp1 -- kubectl get nodes
 multipass exec cp1 -- kubectl get pods -A
 ```
 
+## Tear Down
+
+```bash
+./lab.sh destroy
+```
+
+Deletes and purges all VMs. To rebuild from scratch, run the full build sequence again.
+
 ## Lab Management
 
 ```bash
-./lab.sh up        # Launch or start all VMs
-./lab.sh down      # Stop VMs (preserves state)
-./lab.sh destroy   # Delete and purge all VMs
-./lab.sh status    # Show VM status
+./lab.sh up          # Launch or start all VMs + generate inventory
+./lab.sh down        # Stop VMs (preserves state)
+./lab.sh destroy     # Delete and purge all VMs
+./lab.sh status      # Show VM status
+./lab.sh inventory   # Regenerate ansible/inventory.ini from running VMs
+```
+
+## Full Lifecycle (copy-paste)
+
+Build a cluster from nothing:
+
+```bash
+./lab.sh up
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
+multipass exec cp1 -- kubectl get nodes
+```
+
+Tear down and rebuild:
+
+```bash
+./lab.sh destroy
+./lab.sh up
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
+multipass exec cp1 -- kubectl get nodes
 ```
 
 ## Project Structure
 
 ```
+cluster.yaml         Cluster topology config (node counts, resources)
 cloud-init/          OS-level node preparation (cloud-init YAML)
 ansible/
-  inventory.ini      Ansible inventory (node IPs, SSH config)
+  inventory.ini      Auto-generated Ansible inventory (gitignored after dynamic switch)
   join-command.txt   kubeadm join command (gitignored)
   playbooks/
-    init-control-plane.yaml   Phase 3: kubeadm init + kubeconfig + join command
-    install-calico.yaml       Phase 4: Calico CNI via Tigera operator
-    join-workers.yaml         Phase 5: kubeadm join + cluster health check
-plan.md              Full build plan (7 phases)
-lab.sh               VM lifecycle management
+    init-control-plane.yaml   kubeadm init + kubeconfig + join command
+    install-calico.yaml       Calico CNI via Tigera operator
+    join-workers.yaml         kubeadm join + cluster health check
+plan.md              Full build plan
+lab.sh               VM lifecycle + inventory generation
 ```
 
 ## Build Plan
@@ -101,8 +145,7 @@ See [plan.md](plan.md) for the full step-by-step plan. Progress is tracked on th
 | 3. Control Plane Bootstrap | Done |
 | 4. CNI Plugin (Calico) | Done |
 | 5. Worker Nodes Join | Done |
-| 6. Cluster Validation | Next |
-| 7. Optional Extras | Planned |
+| 6. Cluster Validation | Done |
 
 ## Blog Series
 

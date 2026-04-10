@@ -47,7 +47,7 @@
       register: ready_count
       retries: 12
       delay: 10
-      until: ready_count.stdout | int == 3
+      until: ready_count.stdout | int == (groups['k8s'] | length)
       changed_when: false
 
     - name: Show cluster nodes
