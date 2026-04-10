@@ -2,12 +2,12 @@ cluster:
   ubuntu_version: "22.04"
   cloud_init: "cloud-init/common.yaml"
   control_plane:
-    count: 1
+    count: 3
     cpus: 2
     memory: 2G
     disk: 20G
   workers:
-    count: 2
+    count: 3
     cpus: 2
     memory: 2G
     disk: 20G

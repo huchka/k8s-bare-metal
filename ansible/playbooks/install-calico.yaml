@@ -3,7 +3,7 @@
 # Run: ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
 
 - name: Install Calico CNI plugin
-  hosts: control_plane
+  hosts: "{{ groups['control_plane'][0] }}"
   become: true
   become_user: ubuntu
   vars:

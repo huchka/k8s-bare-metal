@@ -37,7 +37,7 @@
 
 # Verify all nodes are Ready from the control plane
 - name: Verify cluster health
-  hosts: control_plane
+  hosts: "{{ groups['control_plane'][0] }}"
   become: true
   become_user: ubuntu
   tasks:
