@@ -1,3 +1,13 @@
 #cloud-config
 
 package_update: true
+
+write_files:
+  - path: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+
+runcmd:
+  - modprobe overlay
+  - modprobe br_netfilter
