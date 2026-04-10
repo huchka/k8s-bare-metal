@@ -1,0 +1,66 @@
+---
+# Phase 3: Bootstrap the control plane
+# Run: ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
+
+- name: Initialize Kubernetes control plane
+  hosts: control_plane
+  become: true
+  tasks:
+
+    # 3.1 — kubeadm init
+    # Creates etcd, kube-apiserver, kube-scheduler, kube-controller-manager as static pods.
+    # --pod-network-cidr must match the CNI plugin (Calico = 192.168.0.0/16).
+    # --apiserver-advertise-address tells the API server which IP to bind to.
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_already_init
+
+    - name: Run kubeadm init
+      command: >
+        kubeadm init
+        --pod-network-cidr=192.168.0.0/16
+        --apiserver-advertise-address={{ ansible_host }}
+      when: not kubeadm_already_init.stat.exists
+      register: kubeadm_init_output
+
+    # 3.2 — Set up kubeconfig for the ubuntu user
+    # kubectl needs a kubeconfig to authenticate with the API server.
+    # kubeadm writes admin.conf to /etc/kubernetes/ — we copy it to ubuntu's home.
+    - name: Create .kube directory for ubuntu user
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Copy admin kubeconfig to ubuntu user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    # 3.3 — Generate and save the join command
+    # Workers need a token + CA cert hash to securely join the cluster.
+    # We generate a fresh join command and save it to a local file.
+    - name: Generate join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: Save join command to local file
+      copy:
+        content: "{{ join_command.stdout }}"
+        dest: /home/ubuntu/join-command.txt
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Fetch join command to controller
+      fetch:
+        src: /home/ubuntu/join-command.txt
+        dest: "{{ playbook_dir }}/../../ansible/join-command.txt"
+        flat: true
