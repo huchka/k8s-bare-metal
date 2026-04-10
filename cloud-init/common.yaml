@@ -17,3 +17,5 @@ runcmd:
   - modprobe overlay
   - modprobe br_netfilter
   - sysctl --system
+  - swapoff -a
+  - sed -i '/\sswap\s/d' /etc/fstab
