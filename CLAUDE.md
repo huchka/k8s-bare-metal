@@ -17,7 +17,7 @@ Self-study project to build a Kubernetes cluster from scratch on local VMs. The 
 - **VM tool:** Multipass (ARM64 Ubuntu 22.04 VMs)
 - **Automation:** cloud-init for OS-level prep, Ansible for K8s provisioning
 - **Container runtime:** containerd
-- **K8s version:** v1.30
+- **K8s version:** v1.35
 
 ## Cluster Topology
 
