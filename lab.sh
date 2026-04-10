@@ -11,7 +11,7 @@ NODES=(cp1 worker1 worker2)
 usage() {
   echo "Usage: $0 {up|down|destroy|status}"
   echo ""
-  echo "  up       Launch all VMs (fails if they already exist)"
+  echo "  up       Launch or start all VMs"
   echo "  down     Stop all VMs (preserves state)"
   echo "  destroy  Delete and purge all VMs"
   echo "  status   Show VM status"
@@ -20,23 +20,20 @@ usage() {
 
 cmd_up() {
   for vm in "${NODES[@]}"; do
-    if multipass info "$vm" >/dev/null 2>&1; then
-      echo "Error: VM '$vm' already exists. Run '$0 destroy' first."
-      exit 1
+    state=$(multipass info "$vm" --format csv 2>/dev/null | tail -1 | cut -d, -f2 || echo "")
+    if [ "$state" = "Running" ]; then
+      echo "  $vm already running"
+    elif [ -n "$state" ]; then
+      echo "  Starting $vm..."
+      multipass start "$vm"
+    else
+      echo "  Launching $vm..."
+      multipass launch $UBUNTU_VERSION --name "$vm" --cpus $CPUS --memory $MEMORY --disk $DISK \
+        --cloud-init "$CLOUD_INIT"
     fi
   done
 
-  echo "Launching control plane..."
-  multipass launch $UBUNTU_VERSION --name cp1 --cpus $CPUS --memory $MEMORY --disk $DISK \
-    --cloud-init "$CLOUD_INIT"
-
-  echo "Launching worker nodes..."
-  for vm in worker1 worker2; do
-    multipass launch $UBUNTU_VERSION --name "$vm" --cpus $CPUS --memory $MEMORY --disk $DISK \
-      --cloud-init "$CLOUD_INIT"
-  done
-
-  echo "All VMs launched."
+  echo ""
   multipass list
 }
 
