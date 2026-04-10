@@ -1,0 +1,75 @@
+---
+# Phase 4: Install Calico CNI (operator-based)
+# Run: ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
+
+- name: Install Calico CNI plugin
+  hosts: control_plane
+  become: true
+  become_user: ubuntu
+  vars:
+    calico_version: "v3.31.4"
+    calico_base_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests"
+
+  tasks:
+    # Step 1 — Install the Tigera operator
+    # The operator watches for a Calico Installation custom resource and
+    # manages the lifecycle of all Calico components (calico-node DaemonSet,
+    # calico-kube-controllers Deployment, CRDs, etc).
+    - name: Check if tigera-operator namespace exists
+      command: kubectl get namespace tigera-operator
+      register: tigera_ns
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Tigera operator
+      command: kubectl create -f {{ calico_base_url }}/tigera-operator.yaml
+      when: tigera_ns.rc != 0
+
+    # Wait for the operator to register its CRDs before applying the CR.
+    # Without this, kubectl doesn't know about the Installation resource type.
+    - name: Wait for Tigera operator to be ready
+      command: kubectl rollout status deployment/tigera-operator -n tigera-operator --timeout=120s
+      retries: 3
+      delay: 10
+      register: operator_status
+      until: operator_status.rc == 0
+
+    - name: Wait for Installation CRD to be registered
+      command: kubectl get crd installations.operator.tigera.io
+      retries: 12
+      delay: 5
+      register: crd_check
+      until: crd_check.rc == 0
+      changed_when: false
+
+    # Step 2 — Apply the Installation custom resource
+    # This tells the operator to deploy Calico with the default settings.
+    # The default custom-resources.yaml uses CIDR 192.168.0.0/16 which
+    # matches our kubeadm init --pod-network-cidr.
+    - name: Check if Calico Installation resource exists
+      command: kubectl get installation default
+      register: calico_installation
+      ignore_errors: true
+      changed_when: false
+
+    - name: Apply Calico custom resources
+      command: kubectl create -f {{ calico_base_url }}/custom-resources.yaml
+      when: calico_installation.rc != 0
+
+    # Step 3 — Wait for Calico to be ready
+    # calico-node runs as a DaemonSet on every node — it programs routes
+    # and network policy. calico-kube-controllers syncs K8s resources
+    # (NetworkPolicy, namespaces) into Calico's datastore.
+    - name: Wait for calico-node pods to be ready
+      command: kubectl rollout status daemonset/calico-node -n calico-system --timeout=120s
+      retries: 3
+      delay: 10
+      register: calico_node_status
+      until: calico_node_status.rc == 0
+
+    - name: Wait for CoreDNS to be ready
+      command: kubectl rollout status deployment/coredns -n kube-system --timeout=120s
+      retries: 3
+      delay: 10
+      register: coredns_status
+      until: coredns_status.rc == 0
