@@ -1,0 +1,60 @@
+---
+# Phase 5: Join worker nodes to the cluster
+# Run: ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
+
+- name: Join worker nodes to Kubernetes cluster
+  hosts: workers
+  become: true
+  tasks:
+
+    # Check if the node has already joined the cluster.
+    # kubelet writes this file after a successful kubeadm join.
+    - name: Check if node has already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    # Read the join command that was saved during control plane init.
+    # Contains the API server address, token, and CA cert hash.
+    - name: Read join command
+      slurp:
+        src: "{{ playbook_dir }}/../../ansible/join-command.txt"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: join_command_raw
+
+    - name: Set join command fact
+      set_fact:
+        join_command: "{{ join_command_raw.content | b64decode | trim }}"
+
+    # kubeadm join registers this node with the API server, downloads
+    # the cluster CA, and starts kubelet. The node becomes schedulable
+    # once the CNI assigns it a pod CIDR.
+    - name: Join node to cluster
+      command: "{{ join_command }}"
+      when: not kubelet_conf.stat.exists
+
+# Verify all nodes are Ready from the control plane
+- name: Verify cluster health
+  hosts: control_plane
+  become: true
+  become_user: ubuntu
+  tasks:
+
+    - name: Wait for all nodes to be Ready
+      shell: kubectl get nodes --no-headers | grep -c ' Ready '
+      register: ready_count
+      retries: 12
+      delay: 10
+      until: ready_count.stdout | int == 3
+      changed_when: false
+
+    - name: Show cluster nodes
+      command: kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Display nodes
+      debug:
+        var: nodes_output.stdout_lines
