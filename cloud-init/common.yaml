@@ -12,6 +12,13 @@ write_files:
       net.bridge.bridge-nf-call-iptables = 1
       net.bridge.bridge-nf-call-ip6tables = 1
       net.ipv4.ip_forward = 1
+  - path: /etc/containerd/config.toml
+    content: |
+      version = 2
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+        runtime_type = "io.containerd.runc.v2"
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+          SystemdCgroup = true
 
 runcmd:
   - modprobe overlay
@@ -19,3 +26,6 @@ runcmd:
   - sysctl --system
   - swapoff -a
   - sed -i '/\sswap\s/d' /etc/fstab
+  - apt-get install -y containerd
+  - systemctl restart containerd
+  - systemctl enable containerd
