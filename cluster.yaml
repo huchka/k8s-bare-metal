@@ -1,6 +1,9 @@
 cluster:
   ubuntu_version: "22.04"
   cloud_init: "cloud-init/common.yaml"
+  ha:
+    vip: "192.168.2.100"
+    haproxy_port: 8443
   control_plane:
     count: 3
     cpus: 2
