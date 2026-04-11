@@ -1,0 +1,207 @@
+---
+# HA Load Balancer: keepalived + HAProxy on all control plane nodes
+# Run BEFORE kubeadm init: ansible-playbook -i ansible/inventory.ini ansible/playbooks/setup-ha-lb.yaml
+#
+# keepalived manages a floating VIP via VRRP. Whichever CP node is healthiest
+# holds the VIP. If that node goes down, another takes over within seconds.
+#
+# HAProxy on each CP node load-balances TCP 8443 → all API servers on 6443.
+# This way, even if a request arrives via the VIP, it gets distributed across
+# all healthy API servers.
+#
+# The VIP + HAProxy port (8443) becomes the --control-plane-endpoint for kubeadm.
+
+- name: Set up keepalived + HAProxy on control plane nodes
+  hosts: control_plane
+  become: true
+  vars:
+    vip: "192.168.2.100"
+    haproxy_port: 8443
+    apiserver_port: 6443
+    # VRRP virtual_router_id — must be unique on the L2 segment.
+    # Pick any number 1-255 that isn't used by another VRRP instance.
+    vrrp_router_id: 51
+  tasks:
+
+    # ── Install packages ──────────────────────────────────────
+
+    - name: Install keepalived and haproxy
+      apt:
+        name:
+          - keepalived
+          - haproxy
+        state: present
+        update_cache: true
+
+    # ── HAProxy config ────────────────────────────────────────
+    # HAProxy runs in TCP (layer 4) mode. It doesn't terminate TLS —
+    # it just forwards the raw TCP stream to the backend API servers.
+    # This is called "TCP passthrough" or "stream proxy" mode.
+    #
+    # Why TCP and not HTTP? The kube-apiserver handles its own TLS.
+    # HAProxy doesn't need (or have) the API server's certs, so it
+    # can't decrypt the traffic. It just shuffles bytes.
+
+    - name: Configure HAProxy
+      copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              log /dev/log local0
+              maxconn 2000
+              daemon
+
+          defaults
+              log     global
+              mode    tcp
+              option  tcplog
+              timeout connect 5s
+              timeout client  30s
+              timeout server  30s
+
+          # Stats page — useful for debugging. Shows backend health.
+          # Access at http://<any-cp-node>:9000/stats
+          listen stats
+              bind *:9000
+              mode http
+              stats enable
+              stats uri /stats
+              stats refresh 10s
+
+          # The main frontend: accepts connections on port 8443
+          # and sends them to the apiserver backend pool.
+          frontend k8s-api
+              bind *:{{ haproxy_port }}
+              default_backend k8s-api-servers
+
+          # Backend pool: all three API servers on port 6443.
+          # 'check' enables health checks — HAProxy pings each backend
+          # every 3s (inter). After 3 failures (fall), it marks the server
+          # as down. After 2 successes (rise), it marks it back up.
+          backend k8s-api-servers
+              option tcp-check
+              balance roundrobin
+              {% for host in groups['control_plane'] %}
+              server {{ host }} {{ hostvars[host]['ansible_host'] }}:{{ apiserver_port }} check inter 3s fall 3 rise 2
+              {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart HAProxy
+
+    # ── keepalived config ─────────────────────────────────────
+    # VRRP (Virtual Router Redundancy Protocol) is how keepalived nodes
+    # elect a master. All CP nodes join the same VRRP group (virtual_router_id 51).
+    # The node with the highest effective priority becomes master and holds the VIP.
+    #
+    # priority: cp1 gets 101, cp2 gets 100, cp3 gets 99, etc.
+    # This makes cp1 the preferred master, but any node can take over.
+    #
+    # The health check script (/etc/keepalived/check_apiserver.sh) runs
+    # every 3 seconds. If the local API server is down, keepalived subtracts
+    # the weight (50) from this node's priority, making it lower than peers
+    # and triggering a VIP failover.
+
+    - name: Create API server health check script
+      copy:
+        dest: /etc/keepalived/check_apiserver.sh
+        content: |
+          #!/bin/bash
+          # Check if the local kube-apiserver is healthy.
+          # Exit 0 = healthy, exit 1 = unhealthy.
+          #
+          # During initial setup (before kubeadm init), the API server isn't
+          # running yet. We return healthy so keepalived still assigns the VIP —
+          # otherwise kubeadm init can't bind to the control-plane-endpoint.
+          #
+          # Once the cluster is up, this properly detects API server failures.
+          if ! curl -sk https://localhost:{{ apiserver_port }}/healthz -o /dev/null 2>/dev/null; then
+            # API server not responding — but if kubelet isn't running yet
+            # (pre-init), that's expected. Only fail if kubelet is active.
+            if systemctl is-active --quiet kubelet; then
+              exit 1
+            fi
+          fi
+          exit 0
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure keepalived
+      copy:
+        dest: /etc/keepalived/keepalived.conf
+        content: |
+          # Health check: runs check_apiserver.sh every 3 seconds.
+          # If it fails, subtract 'weight' from this node's VRRP priority.
+          vrrp_script check_apiserver {
+              script "/etc/keepalived/check_apiserver.sh"
+              interval 3
+              weight -50
+              fall 3
+              rise 2
+          }
+
+          vrrp_instance K8S_APISERVER {
+              # state BACKUP on all nodes — let priority-based election decide
+              # the master. If you set one to MASTER, it always grabs the VIP
+              # on startup even if another node is healthier.
+              state BACKUP
+              interface enp0s1
+              virtual_router_id {{ vrrp_router_id }}
+
+              # Priority decreases for each subsequent CP node:
+              # cp1=101, cp2=100, cp3=99, etc.
+              # loop.index0 gives 0, 1, 2... for the node's position in the group.
+              priority {{ 101 - groups['control_plane'].index(inventory_hostname) }}
+
+              # How often VRRP peers send heartbeats (seconds).
+              # If the master misses ~3 intervals, a failover starts.
+              advert_int 1
+
+              # Authentication between VRRP peers. All nodes in the same
+              # VRRP group must share the same password.
+              authentication {
+                  auth_type PASS
+                  auth_pass k8svip
+              }
+
+              # The floating IP. Whichever node is master adds this to its
+              # network interface. When it stops being master, the IP is removed.
+              virtual_ipaddress {
+                  {{ vip }}/24
+              }
+
+              # Link the health check script to this VRRP instance.
+              track_script {
+                  check_apiserver
+              }
+          }
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart keepalived
+
+    # ── Enable and start services ─────────────────────────────
+
+    - name: Enable and start keepalived
+      systemd:
+        name: keepalived
+        enabled: true
+        state: started
+
+    - name: Enable and start HAProxy
+      systemd:
+        name: haproxy
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart HAProxy
+      systemd:
+        name: haproxy
+        state: restarted
+
+    - name: Restart keepalived
+      systemd:
+        name: keepalived
+        state: restarted

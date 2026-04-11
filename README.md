@@ -9,13 +9,16 @@ Topology is defined in `cluster.yaml`:
 ```yaml
 cluster:
   ubuntu_version: "22.04"
+  ha:
+    vip: "192.168.2.100"
+    haproxy_port: 8443
   control_plane:
-    count: 1
+    count: 3
     cpus: 2
     memory: 2G
     disk: 20G
   workers:
-    count: 2
+    count: 3
     cpus: 2
     memory: 2G
     disk: 20G
@@ -23,7 +26,7 @@ cluster:
 
 Change the counts to adjust topology. Node names are generated automatically (`cp1..cpN`, `worker1..workerM`).
 
-**Stack:** containerd, kubeadm v1.35, Calico CNI (Tigera operator)
+**Stack:** containerd, kubeadm v1.35, Calico CNI (Tigera operator), keepalived + HAProxy (HA control plane)
 
 ## Prerequisites
 
@@ -46,15 +49,23 @@ Change the counts to adjust topology. Node names are generated automatically (`c
 
 Creates VMs based on `cluster.yaml` with cloud-init (kernel modules, sysctl, containerd, kubeadm). Auto-generates `ansible/inventory.ini` from Multipass IPs.
 
-### 2. Bootstrap control plane
+### 2. Set up HA load balancer
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/setup-ha-lb.yaml
+```
+
+Installs keepalived + HAProxy on all control plane nodes. keepalived manages a floating VIP (`192.168.2.100`) via VRRP. HAProxy load-balances port 8443 across all API servers on port 6443. Must run **before** kubeadm init.
+
+### 3. Bootstrap control plane
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
 ```
 
-Runs `kubeadm init` on cp1 with Calico pod CIDR (`192.168.0.0/16`), sets up kubeconfig, and saves the join command.
+Runs `kubeadm init` on cp1 with `--control-plane-endpoint=192.168.2.100:8443` (the VIP), sets up kubeconfig, and joins cp2/cp3 as additional control plane members.
 
-### 3. Install Calico CNI
+### 4. Install Calico CNI
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
@@ -62,7 +73,7 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
 
 Installs the Tigera operator and Calico. Waits for calico-node and CoreDNS to be ready. Control plane node goes `Ready`.
 
-### 4. Join workers
+### 5. Join workers
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
@@ -70,7 +81,7 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
 
 Joins all worker nodes to the cluster and verifies every node is `Ready`.
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 multipass exec cp1 -- kubectl get nodes
@@ -101,6 +112,7 @@ Build a cluster from nothing:
 
 ```bash
 ./lab.sh up
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/setup-ha-lb.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
@@ -112,6 +124,7 @@ Tear down and rebuild:
 ```bash
 ./lab.sh destroy
 ./lab.sh up
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/setup-ha-lb.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/init-control-plane.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-calico.yaml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/join-workers.yaml
@@ -127,6 +140,7 @@ ansible/
   inventory.ini      Auto-generated Ansible inventory (gitignored after dynamic switch)
   join-command.txt   kubeadm join command (gitignored)
   playbooks/
+    setup-ha-lb.yaml          keepalived + HAProxy for HA control plane
     init-control-plane.yaml   kubeadm init + kubeconfig + join command
     install-calico.yaml       Calico CNI via Tigera operator
     join-workers.yaml         kubeadm join + cluster health check
@@ -142,6 +156,7 @@ See [plan.md](plan.md) for the full step-by-step plan. Progress is tracked on th
 |-------|--------|
 | 1. OS Preparation (cloud-init) | Done |
 | 2. Ansible Setup | Done |
+| 2.5. HA Load Balancer (keepalived + HAProxy) | Done |
 | 3. Control Plane Bootstrap | Done |
 | 4. CNI Plugin (Calico) | Done |
 | 5. Worker Nodes Join | Done |

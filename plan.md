@@ -48,12 +48,40 @@ All nodes need identical OS-level prep before K8s can run.
 
 ---
 
+## Phase 2.5: HA Load Balancer (keepalived + HAProxy)
+
+Must run **before** kubeadm init so the VIP is available as the control plane endpoint.
+
+### 2.5.1 Install keepalived + HAProxy on all CP nodes
+- Run `setup-ha-lb.yaml` playbook
+- Why: keepalived provides a floating VIP via VRRP. HAProxy load-balances API server traffic. Together they ensure the control plane endpoint survives node failure.
+
+### 2.5.2 keepalived (VIP management)
+- All CP nodes run keepalived in BACKUP state with priority-based election (cp1=101, cp2=100, cp3=99)
+- VIP `192.168.2.100` floats to the highest-priority healthy node
+- Health check script monitors local API server — drops priority on failure to trigger failover
+- Why: VRRP gives you a single stable IP for the cluster endpoint. No DNS changes needed on failure.
+
+### 2.5.3 HAProxy (API server load balancing)
+- Listens on `*:8443` (TCP mode, no TLS termination)
+- Backends: all CP nodes on port 6443
+- Health checks every 3s remove downed API servers from the pool
+- Why: Even though the VIP lands on one node, HAProxy distributes load across all healthy API servers.
+
+### 2.5.4 Verify
+- VIP responds to ping from any node
+- `curl -sk https://192.168.2.100:8443/healthz` returns `ok` (after kubeadm init)
+- HAProxy stats at `http://<cp-node>:9000/stats`
+
+---
+
 ## Phase 3: Control Plane Bootstrap (Ansible Playbook)
 
 ### 3.1 kubeadm init
 - Run `kubeadm init` on cp1 with:
-  - `--pod-network-cidr` (depends on CNI choice)
+  - `--pod-network-cidr=192.168.0.0/16` (Calico default)
   - `--apiserver-advertise-address` (cp1's IP)
+  - `--control-plane-endpoint=192.168.2.100:8443` (VIP + HAProxy port)
 - Why: This creates the entire control plane — etcd, kube-apiserver, kube-scheduler, kube-controller-manager as static pods.
 
 ### 3.2 kubeconfig Setup
