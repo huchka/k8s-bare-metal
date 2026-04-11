@@ -116,9 +116,10 @@
           #
           # Once the cluster is up, this properly detects API server failures.
           if ! curl -sk https://localhost:{{ apiserver_port }}/healthz -o /dev/null 2>/dev/null; then
-            # API server not responding — but if kubelet isn't running yet
-            # (pre-init), that's expected. Only fail if kubelet is active.
-            if systemctl is-active --quiet kubelet; then
+            # API server not responding — but if the manifest doesn't exist yet
+            # (pre-init), no API server is expected. Only fail if the manifest
+            # exists, meaning kubeadm has run and the apiserver should be up.
+            if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
               exit 1
             fi
           fi
