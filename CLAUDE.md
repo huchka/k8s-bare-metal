@@ -43,9 +43,21 @@ This project follows a structured SDLC. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 - When opening a PR: move the issue to "In Review".
 - When merged and verified: move the issue to "Done".
 
+## Plan Mode for non-trivial changes
+
+Drop into Plan Mode (Shift+Tab) and save the plan to `.plans/YYYYMMDD-<slug>.md` before executing for:
+- New cloud-init steps or significant changes to existing ones
+- New Ansible roles or playbook restructures
+- VM topology changes (adding nodes, role changes, sizing)
+- Bringing up new K8s components (CNI, storage, ingress, observability)
+- Anything requiring a from-scratch `up.sh` re-run on the user's side
+
+Skip for: typo fixes, comment edits, single-line config tweaks. See `.plans/README.md` for naming and structure.
+
 ## Project Structure
 
 - `cloud-init/` — cloud-init YAML configs for VM bootstrap
 - `ansible/` — Ansible playbooks and inventory for K8s setup
 - `up.sh` — Launch all VMs
 - `plan.md` — Step-by-step build plan
+- `.plans/` — Versioned implementation plans for non-trivial changes
